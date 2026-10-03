@@ -12,7 +12,7 @@ An authentic, zero-dependency, pixel-accurate web recreation of the world's most
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-NONE-success?style=for-the-badge)](#)
 
-### 🔗 [Live Demo — zhulinchng.github.io](https://zhulinchng.github.io/)
+### 🔗 [Live Demo — zhulinchng.github.io](https://zhulinchng.github.io/Casio-fx-991ES_Plus/)
 
 <br/>
 <pre align="center">
