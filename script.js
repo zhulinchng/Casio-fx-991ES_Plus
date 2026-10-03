@@ -129,9 +129,11 @@
         resetModifiers() {
             this.isShift = false;
             this.isAlpha = false;
-            this.isHyp = false;
             this.isSto = false;
             this.isRcl = false;
+            // NOTE: isHyp is intentionally kept — on a real fx-991ES PLUS the
+            // HYP indicator stays on until a hyperbolic/trig key is used or
+            // the calculator is cleared.
             this.render();
         }
 
@@ -216,9 +218,11 @@
         evalSubFunc(funcExpr, xVal) {
             const oldX = this.vars.X;
             this.vars.X = xVal;
-            const res = this.solveParsed(funcExpr);
-            this.vars.X = oldX;
-            return res;
+            try {
+                return this.solveParsed(funcExpr);
+            } finally {
+                this.vars.X = oldX;
+            }
         }
 
         // Central Math Parser
@@ -344,20 +348,56 @@
                 s = s.replace(re2, `(${v})`);
             }
 
+            // Values substituted above (and Ans) may themselves be exponential
+            // literals (e.g. 1e-7, 1e+21). Protect them again so the
+            // implicit-multiplication pass below and the Euler-e path cannot
+            // corrupt them.
+            s = s.replace(/(\d(?:\.\d+)?)e([+-]?\d+)/g, '$1@$2');
+
             // Factorial (n!)
             s = s.replace(/(\d+)!/g, (_, n) => `(${this.factorial(+n)})`);
+            // Postfix factorial over a compound operand: (2+3)! , (5)! , sin(30)! …
+            {
+                let i = s.indexOf('!');
+                while (i !== -1) {
+                    if (i > 0 && s[i - 1] === ')') {
+                        let d = 0, open = -1;
+                        for (let j = i - 1; j >= 0; j--) {
+                            if (s[j] === ')') d++;
+                            else if (s[j] === '(') { d--; if (d === 0) { open = j; break; } }
+                        }
+                        if (open !== -1) {
+                            // If the parens belong to a function call
+                            // (e.g. "sin(30)!"), the factorial applies to the
+                            // whole call, so extend the operand leftwards over
+                            // the function name.
+                            let start = open;
+                            while (start > 0 && /[A-Za-z0-9_.]/.test(s[start - 1])) start--;
+                            const operand = s.slice(start, i);
+                            s = s.slice(0, start) + `(this.factorial(${operand}))` + s.slice(i + 1);
+                            i = s.indexOf('!');
+                            continue;
+                        }
+                    }
+                    i = s.indexOf('!', i + 1);
+                }
+            }
 
             // Powers & Roots
             s = s.replace(/²/g, '**2');
             s = s.replace(/³/g, '**3');
             s = s.replace(/\^/g, '**');
 
-            // Percentage: a+b% = a + a*b/100 (Casio convention); a*b%, a/b%, a% = a/100
+            // Replace display symbols (do this BEFORE the % rules so that
+            // expressions like 200−5% and 200×5% are handled correctly)
+            s = s.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-');
+
+            // Percentage: a+b% = a + a*b/100 (Casio convention); a×b%, a÷b%, a% = a/100
+            // For division the percent operand is itself /100 first:
+            // 200÷5% = 200÷0.05 = 4000.
+            s = s.replace(/([\d.()]+)\s*\/\s*(\d+(?:\.\d+)?)\s*%/g, '$1/($2/100)');
             s = s.replace(/([\d.()]+)\s*([+-])\s*(\d+(?:\.\d+)?)\s*%/g, '$1$2$1*$3/100');
             s = s.replace(/([\d.()]+)\s*%/g, '$1/100');
-
-            // Replace display symbols
-            s = s.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-');
 
             // Implicit multiplication: 2(3), (2)(3), 4π… (done BEFORE the
             // Math.* tokens are introduced so digits inside names like
@@ -424,9 +464,6 @@
         // ("Unary operator used immediately before exponentiation expression"
         // is a SyntaxError in JavaScript).
         fixUnaryMinusPow(s) {
-            let out = '';
-            let i = 0;
-            const isFactorStart = (ch) => /[0-9A-Za-z_$(]/.test(ch || '');
             const parseFactor = (str, k) => {
                 let n = k;
                 while (n < str.length && str[n] === ' ') n++;
@@ -440,9 +477,27 @@
                 }
                 let e = n;
                 while (e < str.length && /[0-9A-Za-z_$.]/.test(str[e])) e++;
-                return e > n ? { txt: str.slice(n, e), end: e } : null;
+                if (e > n) {
+                    // A factor may be a call like Math.sqrt(...): consume the
+                    // argument list too, so e.g. "-Math.sqrt(4)**2" can be
+                    // wrapped as a whole factor.
+                    let m = e;
+                    while (m < str.length && str[m] === ' ') m++;
+                    if (str[m] === '(') {
+                        let d = 0;
+                        for (let j = m; j < str.length; j++) {
+                            if (str[j] === '(') d++;
+                            else if (str[j] === ')') { d--; if (d === 0) return { txt: str.slice(n, j + 1), end: j + 1 }; }
+                        }
+                    }
+                    return { txt: str.slice(n, e), end: e };
+                }
+                return null;
             };
 
+            // Pass 1: unary +/- in operand position directly before a ** chain.
+            let out = '';
+            let i = 0;
             while (i < s.length) {
                 const ch = s[i];
                 if (ch === '-' || ch === '+') {
@@ -483,7 +538,50 @@
                 out += ch;
                 i++;
             }
-            return out;
+
+            // Pass 2: a unary sign that starts a chained exponent.
+            // "a**-b**c" is a SyntaxError in JS; rewrite as "a**(-(b**c))".
+            let out2 = '';
+            i = 0;
+            while (i < out.length) {
+                if (out.slice(i, i + 2) === '**') {
+                    let j = i + 2;
+                    while (j < out.length && out[j] === ' ') j++;
+                    let sign = '';
+                    if (out[j] === '-' || out[j] === '+') { sign = out[j]; j++; }
+                    if (sign) {
+                        const f1 = parseFactor(out, j);
+                        if (f1) {
+                            let chain = f1.txt;
+                            let k = f1.end;
+                            let hasMore = false;
+                            while (true) {
+                                let p = k;
+                                while (p < out.length && out[p] === ' ') p++;
+                                if (out.slice(p, p + 2) === '**') {
+                                    hasMore = true;
+                                    let q = p + 2;
+                                    while (q < out.length && out[q] === ' ') q++;
+                                    let sg = '';
+                                    if (out[q] === '-' || out[q] === '+') { sg = out[q]; q++; }
+                                    const f2 = parseFactor(out, q);
+                                    if (!f2) break;
+                                    chain += '**' + sg + f2.txt;
+                                    k = f2.end;
+                                } else break;
+                            }
+                            if (hasMore) {
+                                out2 += '**(' + (sign === '-' ? '-(' : '+(') + chain + '))';
+                                i = k;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                out2 += out[i];
+                i++;
+            }
+            return out2;
         }
 
         evaluate() {
@@ -536,15 +634,17 @@
             }
 
             // Resolve a variable register letter from a key press.
-            // Variable letters mostly arrive via ALPHA + key, but also accept
-            // raw letter tokens.
-            const alphaVarMap = {
+            // Variable letters arrive via ALPHA + key; raw letter tokens
+            // are also accepted. ALPHA+M_PLUS emits variable M but must not
+            // trigger the M+/M- memory operation.
+            const alphaInsertMap = {
                 'INV': 'A', 'LOGAB': 'B', 'FRAC': 'C', 'SQRT': 'D',
-                'SQR': 'E', 'POW': 'F', 'LOG': 'X', 'LN': 'Y', 'M_PLUS': 'M'
+                'SQR': 'E', 'POW': 'F', 'LOG': 'X', 'LN': 'Y', 'M_PLUS': 'M',
+                ')': 'X', 'EXP': 'e', 'DOT': 'RanInt('
             };
             let varKey = null;
             if (/^[A-FXYM]$/.test(key)) varKey = key;
-            else if (this.isAlpha && alphaVarMap[key]) varKey = alphaVarMap[key];
+            else if (this.isAlpha && /^[A-FXYM]$/.test(alphaInsertMap[key] || '')) varKey = alphaInsertMap[key];
 
             // STO (Store to variable)
             if (this.isSto && varKey) {
@@ -582,6 +682,7 @@
 
             // ON / AC / Clear
             if (key === 'ON' || key === 'AC') {
+                this.isHyp = false;
                 if (this.isShift && key === 'AC') {
                     // Turn off calculator effect
                     this.expr = '';
@@ -680,13 +781,12 @@
                 }
                 this.isShift = false;
                 this.isAlpha = false;
-                this.isHyp = false;
                 this.render();
                 return;
             }
 
             // Memory M+ / M-
-            if (key === 'M_PLUS') {
+            if (key === 'M_PLUS' && !this.isAlpha) {
                 const cur = this.currentResult !== null ? this.currentResult : this.lastAnswer;
                 if (this.isShift) {
                     this.vars.M -= cur;
@@ -705,17 +805,21 @@
                         if (!this.expr.trim()) throw new Error('empty');
                         let x0 = (typeof this.vars.X === 'number' && isFinite(this.vars.X) && this.vars.X !== 0) ? this.vars.X : 0.1;
                         let x1 = x0 + 0.01;
+                        let converged = false;
                         for (let i = 0; i < 30; i++) {
                             let y0 = this.evalSubFunc(this.expr, x0);
                             let y1 = this.evalSubFunc(this.expr, x1);
                             if (typeof y1 !== 'number' || !isFinite(y1)) break;
-                            if (Math.abs(y1) < 1e-8) break;
+                            if (Math.abs(y1) < 1e-8) { converged = true; break; }
                             if (typeof y0 !== 'number' || !isFinite(y0) || y1 === y0) break;
                             let dx = (y1 * (x1 - x0)) / (y1 - y0);
                             x0 = x1;
                             x1 -= dx;
                         }
                         if (typeof x1 !== 'number' || isNaN(x1) || !isFinite(x1)) throw new Error('no root');
+                        // Accept only a genuine root: the search must have
+                        // converged (|f(x₁)| < 1e-8 at some iteration).
+                        if (!converged) throw new Error('no root');
                         this.vars.X = x1;
                         this.setResult(`X = ${this.formatNumber(x1)}`, x1);
                     } catch (e) {
@@ -733,12 +837,8 @@
             let tok = null;
 
             if (this.isAlpha) {
-                // ALPHA variables A, B, C, D, E, F, X, Y, M
-                const alphaKeys = {
-                    'INV': 'A', 'LOGAB': 'B', 'FRAC': 'C', 'SQRT': 'D',
-                    'SQR': 'E', 'POW': 'F', 'LOG': 'X', 'LN': 'Y',
-                    'M_PLUS': 'M', ')': 'X', 'EXP': 'e', 'DOT': 'RanInt('
-                };
+                // ALPHA variables and special tokens (A..M, X, e, RanInt()
+                const alphaKeys = alphaInsertMap;
                 if (alphaKeys[key]) tok = alphaKeys[key];
             } else if (this.isShift) {
                 // SHIFT yellow secondary mappings
@@ -766,9 +866,9 @@
                     case 'LOG': tok = 'log('; break;
                     case 'LN': tok = 'ln('; break;
                     case 'NEG': tok = '(-'; break;
-                    case 'SIN': tok = this.isHyp ? 'sinh(' : 'sin('; break;
-                    case 'COS': tok = this.isHyp ? 'cosh(' : 'cos('; break;
-                    case 'TAN': tok = this.isHyp ? 'tanh(' : 'tan('; break;
+                    case 'SIN': tok = this.isHyp ? 'sinh(' : 'sin('; this.isHyp = false; break;
+                    case 'COS': tok = this.isHyp ? 'cosh(' : 'cos('; this.isHyp = false; break;
+                    case 'TAN': tok = this.isHyp ? 'tanh(' : 'tan('; this.isHyp = false; break;
                     case '(': tok = '('; break;
                     case ')': tok = ')'; break;
                     case 'MUL': tok = '×'; break;

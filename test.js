@@ -125,7 +125,64 @@ eq('Mixed', eng.solveParsed('Mixed(12.875)'), '12⌟7⌟8');
 eq('Mixed integer', eng.solveParsed('Mixed(4)'), '4');
 eq('percent plus', eng.solveParsed('200+5%'), 210);
 eq('percent times', eng.solveParsed('200×5%'), 10);
+eq('percent div', eng.solveParsed('200÷5%'), 4000, 1e-9);
+eq('percent unicode minus', eng.solveParsed('200−5%'), 190);
+eq('percent unicode times', eng.solveParsed('200×5%'), 10);
+eq('percent parens', eng.solveParsed('(200+5)%'), 2.05, 1e-12);
 eq('percent alone', eng.solveParsed('5%'), 0.05);
+
+// ---- Factorials over compound operands --------------------------------------
+eq('paren factorial', eng.solveParsed('(2+3)!'), 120);
+eq('nested paren factorial', eng.solveParsed('((2+3)+4)!'), 362880);
+eng.vars.X = 4;
+eq('var factorial', eng.solveParsed('X!'), 24);
+eng.vars.X = 0;
+eq('neg factorial NaN', isNaN(eng.solveParsed('(-5)!')), true);
+
+// ---- Power chains with unary signs ------------------------------------------
+eq('exp chain with sign', eng.solveParsed('2^-3^2'), Math.pow(2, -9), 1e-12);
+eq('exp chain neg both', eng.solveParsed('2^-3^-2'), Math.pow(2, -Math.pow(3, -2)), 1e-12);
+eq('neg sqrt squared', eng.solveParsed('-√(4)^2'), -4, 1e-12);
+eq('neg pow ok', eng.solveParsed('-5^2'), -25);
+
+// ---- Exponential-notation register values ------------------------------------
+eng.vars.X = 1e-7;
+eq('var exp literal', eng.solveParsed('X'), 1e-7);
+eq('var exp in expr', eng.solveParsed('2X'), 2e-7, 1e-21);
+eng.vars.X = 1e21;
+eq('var exp 21', eng.solveParsed('X'), 1e21);
+eng.vars.X = 0;
+eng.lastAnswer = 1e-7;
+eq('Ans exp literal', eng.solveParsed('Ans'), 1e-7);
+eng.lastAnswer = 0;
+
+// ---- Calculus state safety ----------------------------------------------------
+eng.vars.X = 42;
+eq('derivative', eng.solveParsed('d/dx(X^2, 3)'), 6, 1e-4);
+eq('X preserved after d/dx', eng.vars.X, 42);
+
+// ---- HYP / hyp persistence via button flow -------------------------------------
+eng.expr = ''; eng.cursor = 0; eng.isHyp = false;
+eng.handleKey('HYP');
+eq('hyp flag on', eng.isHyp, true);
+eng.handleKey('5');
+eq('hyp survives digit', eng.isHyp, true);
+eng.handleKey('SIN');
+eq('hyp makes sinh', eng.expr, '5sinh(');
+eq('hyp consumed', eng.isHyp, false);
+eng.handleKey('AC');
+eq('AC clears hyp', eng.isHyp, false);
+
+// ---- ALPHA M+ inserts variable M, plain M+ accumulates -------------------------
+eng.expr = ''; eng.cursor = 0; eng.vars.M = 0;
+eng.isAlpha = true; eng.handleKey('M_PLUS'); eng.isAlpha = false;
+eq('ALPHA M_PLUS inserts M', eng.expr, 'M');
+eq('M vars untouched', eng.vars.M, 0);
+eng.currentResult = 7;
+eng.handleKey('M_PLUS');
+eq('plain M+ adds', eng.vars.M, 7);
+eng.isShift = true; eng.handleKey('M_PLUS'); eng.isShift = false;
+eq('SHIFT M+ subtracts', eng.vars.M, 0);
 eq('toDMS', eng.toDMS(12.5), '12°30’0.0”');
 eq('toDMS carry', eng.toDMS(59.99999999), '60°0’0.0”');
 
@@ -170,6 +227,18 @@ keys('SUB', '9');
 eng.isShift = true; eng.handleKey('CALC'); eng.isShift = false;
 eq('SOLVE X²−9', Math.abs(Math.abs(eng.currentResult) - 3) < 1e-6, true);
 
+// SOLVE rejects non-roots and does not pollute X
+eng.expr = 'X^2+1'; eng.cursor = eng.expr.length; eng.vars.X = 0;
+eng.isShift = true; eng.handleKey('CALC'); eng.isShift = false;
+eq('SOLVE X²+1 fails', eng.resElem.textContent, 'Math ERROR');
+eq('SOLVE failure resets cur', eng.currentResult, null);
+eq('X restored after failed solve', eng.vars.X, 0);
+
+// Division-percent root search must also fail (no root exists)
+eng.expr = '1/(X+5)'; eng.cursor = eng.expr.length; eng.vars.X = 0;
+eng.isShift = true; eng.handleKey('CALC'); eng.isShift = false;
+eq('SOLVE 1/(X+5) fails', eng.resElem.textContent, 'Math ERROR');
+
 // History recall
 eq('history has entries', eng.history.length >= 2, true);
 eng.handleNav('UP');
@@ -192,6 +261,17 @@ eq('SD back to decimal', eng.resElem.textContent, '0.875');
 eng.currentResult = 123456;
 eng.handleKey('ENG');
 eq('ENG shift', Math.abs(eng.currentResult - 123.456) < 1e-9, true);
+
+// ---- Constructor boot + end-to-end EXE smoke test -----------------------------
+{
+    const boot = new CasioSuperEngine();
+    boot.handleKey('3'); boot.handleKey('ADD'); boot.handleKey('4');
+    boot.handleKey('EXE');
+    eq('constructor boots', boot.currentResult, 7);
+    eq('boot result LCD', boot.resElem.textContent, '7');
+    boot.handleKey('AC');
+    eq('AC resets display', boot.resElem.textContent, '0');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
