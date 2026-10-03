@@ -75,13 +75,14 @@ No installation, web servers, or package managers required.
 1. Clone or download this repository:
    ```bash
    git clone https://github.com/altkriz/casio-fx-991es-plus.git
+   ```
 
 2.  Open the file in any modern web browser:
     # Linux / macOS
-    open casio_fx991es_plus.html
+    open index.html
 
     # Windows
-    start casio_fx991es_plus.html
+    start index.html
     Or simply double-click the .html file from your desktop or file manager.
 
 📖 Operation Examples

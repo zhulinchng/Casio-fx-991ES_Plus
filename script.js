@@ -102,7 +102,12 @@
 
         setResult(val, raw = null) {
             this.resElem.textContent = val;
-            this.currentResult = raw !== null ? raw : parseFloat(val);
+            if (raw !== null) {
+                this.currentResult = raw;
+            } else {
+                const p = parseFloat(val);
+                this.currentResult = isNaN(p) ? null : p;
+            }
             this.sdState = 0;
         }
 
@@ -153,10 +158,13 @@
             if (isNaN(val)) return 'Math ERROR';
             const sign = val < 0 ? '-' : '';
             const abs = Math.abs(val);
-            const d = Math.floor(abs);
-            const m = Math.floor((abs - d) * 60);
-            const s = ((abs - d - m / 60) * 3600).toFixed(1);
-            return `${sign}${d}°${m}’${s}”`;
+            let d = Math.floor(abs);
+            let m = Math.floor((abs - d) * 60);
+            let s = (abs - d - m / 60) * 3600;
+            let sec = Math.round(s * 10) / 10;
+            if (sec >= 60) { sec = 0; m += 1; }
+            if (m >= 60) { m = 0; d += 1; }
+            return `${sign}${d}°${m}’${sec.toFixed(1)}”`;
         }
 
         formatNumber(num) {
@@ -215,45 +223,150 @@
 
         // Central Math Parser
         solveParsed(inputStr) {
-            let s = inputStr;
+            let s = String(inputStr);
 
-            // Handle d/dx(func, x)
-            s = s.replace(/d\/dx\((.+?),([^)]+)\)/g, (_, f, xVal) => {
-                const v = this.solveParsed(xVal);
-                return `(${this.evalDerivative(f, v)})`;
+            // --- Parser helpers -------------------------------------------------
+            const matchParen = (str, i) => {
+                let d = 0;
+                for (let j = i; j < str.length; j++) {
+                    if (str[j] === '(') d++;
+                    else if (str[j] === ')') { d--; if (d === 0) return j; }
+                }
+                return -1;
+            };
+
+            const splitTop = (str) => {
+                const parts = [];
+                let d = 0, cur = '';
+                for (const ch of str) {
+                    if (ch === ',' && d === 0) { parts.push(cur); cur = ''; }
+                    else { cur += ch; if (ch === '(') d++; else if (ch === ')') d--; }
+                }
+                parts.push(cur);
+                return parts.map(p => p.trim());
+            };
+
+            // Evaluate calls whose arguments are full sub-expressions.
+            // The arguments are parsed recursively, so nested commas, parens,
+            // π, variables (X, Ans …) and nested calculus are all handled.
+            const extractCalls = (name, fn) => {
+                let i = s.indexOf(name);
+                while (i !== -1) {
+                    const open = i + name.length - 1; // index of '('
+                    if (s[open] !== '(') break;
+                    const close = matchParen(s, open);
+                    if (close === -1) break;
+                    const args = splitTop(s.slice(open + 1, close));
+                    const val = fn(args);
+                    s = s.slice(0, i) + '(' + val + ')' + s.slice(close + 1);
+                    i = s.indexOf(name);
+                }
+            };
+
+            const evalArg = (a) => this.solveParsed(a);
+
+            extractCalls('d/dx(', a => this.evalDerivative(a[0], evalArg(a[1])));
+            extractCalls('∫(', a => this.evalIntegral(a[0], evalArg(a[1]), evalArg(a[2])));
+            extractCalls('Σ(', a => {
+                const lo = Math.round(evalArg(a[1]));
+                const hi = Math.round(evalArg(a[2]));
+                let acc = 0;
+                for (let x = lo; x <= hi; x++) acc += this.evalSubFunc(a[0], x);
+                return acc;
+            });
+            extractCalls('log_b(', a => Math.log(evalArg(a[1])) / Math.log(evalArg(a[0])));
+            extractCalls('Pol(', a => Math.hypot(evalArg(a[0]), evalArg(a[1])));
+            extractCalls('Rec(', a => {
+                const r = evalArg(a[0]);
+                const t = evalArg(a[1]);
+                const rad = this.angleMode === 'DEG' ? t * Math.PI / 180
+                          : this.angleMode === 'GRA' ? t * Math.PI / 200 : t;
+                return r * Math.cos(rad);
+            });
+            extractCalls('RanInt(', a => {
+                const lo = Math.ceil(evalArg(a[0]));
+                const hi = Math.floor(evalArg(a[1]));
+                return lo + Math.floor(Math.random() * (hi - lo + 1));
             });
 
-            // Handle ∫(func, a, b)
-            s = s.replace(/∫\((.+?),([^,]+),([^)]+)\)/g, (_, f, aVal, bVal) => {
-                const a = this.solveParsed(aVal);
-                const b = this.solveParsed(bVal);
-                return `(${this.evalIntegral(f, a, b)})`;
-            });
+            // Mixed fraction → formatted display string (top level only)
+            let mixedResult = null;
+            {
+                let i = s.indexOf('Mixed(');
+                while (i !== -1) {
+                    const open = i + 'Mixed('.length - 1;
+                    if (s[open] !== '(') break;
+                    const close = matchParen(s, open);
+                    if (close === -1) break;
+                    const v = evalArg(s.slice(open + 1, close));
+                    const frac = this.toFraction(v);
+                    let txt;
+                    if (frac && frac.d > 1) {
+                        const whole = Math.trunc(v);
+                        const m = Math.abs(frac.n) - Math.abs(whole) * frac.d;
+                        txt = whole === 0 ? `${frac.n}⌟${frac.d}`
+                            : (m === 0 ? `${whole}` : `${whole}⌟${m}⌟${frac.d}`);
+                    } else {
+                        txt = this.formatNumber(v);
+                    }
+                    s = s.slice(0, i) + '@MIXED@' + s.slice(close + 1);
+                    mixedResult = txt;
+                    i = s.indexOf('Mixed(');
+                }
+                if (mixedResult !== null) {
+                    const rest = s.replace(/@MIXED@/g, '').replace(/[\s()+\-×÷*/]/g, '');
+                    if (rest === '') return mixedResult;
+                    s = s.replace(/@MIXED@/g, 'NaN');
+                }
+            }
+
+            // Protect scientific-notation literals (e.g. 1.6e-19 from CONV)
+            // so the Euler-'e' substitution below cannot corrupt them.
+            s = s.replace(/(\d(?:\.\d+)?)e([+-]?\d+)/g, '$1@$2');
 
             // Constants
             s = s.replace(/π/g, `(${Math.PI})`);
+            s = s.replace(/Ran#/g, '(Math.random())');
             s = s.replace(/e(?![a-zA-Z0-9_])/g, `(${Math.E})`);
             s = s.replace(/Ans/g, `(${this.lastAnswer})`);
+
+            // Permutations & Combinations (e.g. 5 P 2 or 5 C 2)
+            // NOTE: must run BEFORE variable substitution consumes the C variable.
+            s = s.replace(/(\d+)\s*P\s*(\d+)/g, (_, n, r) => `(${this.nPr(+n, +r)})`);
+            s = s.replace(/(\d+)\s*C\s*(\d+)/g, (_, n, r) => `(${this.nCr(+n, +r)})`);
 
             // Variables substitution
             for (const [k, v] of Object.entries(this.vars)) {
                 const re = new RegExp(`\\b${k}\\b`, 'g');
                 s = s.replace(re, `(${v})`);
+                // a variable can also follow a digit (e.g. "2X") — \b misses it
+                const re2 = new RegExp(`(?<=\\d)${k}\\b`, 'g');
+                s = s.replace(re2, `(${v})`);
             }
 
             // Factorial (n!)
-            s = s.replace(/(\d+)!/g, (_, n) => `this.factorial(${n})`);
-
-            // Permutations & Combinations (e.g. 5 P 2 or 5 C 2)
-            s = s.replace(/(\d+)\s*P\s*(\d+)/g, (_, n, r) => `this.nPr(${n},${r})`);
-            s = s.replace(/(\d+)\s*C\s*(\d+)/g, (_, n, r) => `this.nCr(${n},${r})`);
+            s = s.replace(/(\d+)!/g, (_, n) => `(${this.factorial(+n)})`);
 
             // Powers & Roots
             s = s.replace(/²/g, '**2');
             s = s.replace(/³/g, '**3');
             s = s.replace(/\^/g, '**');
-            s = s.replace(/√\(/g, 'Math.sqrt(');
-            s = s.replace(/∛\(/g, 'Math.cbrt(');
+
+            // Percentage: a+b% = a + a*b/100 (Casio convention); a*b%, a/b%, a% = a/100
+            s = s.replace(/([\d.()]+)\s*([+-])\s*(\d+(?:\.\d+)?)\s*%/g, '$1$2$1*$3/100');
+            s = s.replace(/([\d.()]+)\s*%/g, '$1/100');
+
+            // Replace display symbols
+            s = s.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-');
+
+            // Implicit multiplication: 2(3), (2)(3), 4π… (done BEFORE the
+            // Math.* tokens are introduced so digits inside names like
+            // "Math.log10(" are never matched)
+            s = s.replace(/\)\s*\(/g, ')*(');
+            s = s.replace(/(\d)\s*\(/g, '$1*(');
+            s = s.replace(/\)\s*(\d)/g, ')*$1');
+            s = s.replace(/(\d)\s*(?=[A-Za-z√∛])/g, '$1*');
+            s = s.replace(/\)\s*(?=[A-Za-z√∛])/g, ')*');
 
             // Angle Conversions for Trig
             let toRad = '1';
@@ -266,37 +379,111 @@
                 fromRad = '(200/Math.PI)';
             }
 
-            // Standard Trig & Inverses
-            s = s.replace(/sin\(/g, `Math.sin(${toRad}*`);
-            s = s.replace(/cos\(/g, `Math.cos(${toRad}*`);
-            s = s.replace(/tan\(/g, `Math.tan(${toRad}*`);
-            s = s.replace(/sin⁻¹\(/g, `(${fromRad}*Math.asin(`);
-            s = s.replace(/cos⁻¹\(/g, `(${fromRad}*Math.acos(`);
-            s = s.replace(/tan⁻¹\(/g, `(${fromRad}*Math.atan(`);
+            // Standard Trig & Inverses (balanced-paren replacement keeps the
+            // parentheses balanced and handles nested calls safely)
+            const convFn = (name, build) => {
+                let i = s.indexOf(name);
+                while (i !== -1) {
+                    if (i > 0 && /[A-Za-z0-9_.]/.test(s[i - 1])) { i = s.indexOf(name, i + 1); continue; }
+                    const open = i + name.length - 1; // index of '('
+                    if (s[open] !== '(') break;
+                    const close = matchParen(s, open);
+                    if (close === -1) break;
+                    const arg = s.slice(open + 1, close);
+                    s = s.slice(0, i) + build(arg) + s.slice(close + 1);
+                    i = s.indexOf(name);
+                }
+            };
 
-            // Hyperbolics
-            s = s.replace(/sinh\(/g, 'Math.sinh(');
-            s = s.replace(/cosh\(/g, 'Math.cosh(');
-            s = s.replace(/tanh\(/g, 'Math.tanh(');
+            convFn('sin⁻¹(', a => `(${fromRad}*Math.asin(${a}))`);
+            convFn('cos⁻¹(', a => `(${fromRad}*Math.acos(${a}))`);
+            convFn('tan⁻¹(', a => `(${fromRad}*Math.atan(${a}))`);
+            convFn('sinh(', a => `Math.sinh(${a})`);
+            convFn('cosh(', a => `Math.cosh(${a})`);
+            convFn('tanh(', a => `Math.tanh(${a})`);
+            convFn('sin(', a => `Math.sin(${toRad}*(${a}))`);
+            convFn('cos(', a => `Math.cos(${toRad}*(${a}))`);
+            convFn('tan(', a => `Math.tan(${toRad}*(${a}))`);
+            convFn('log(', a => `Math.log10(${a})`);
+            convFn('ln(', a => `Math.log(${a})`);
+            s = s.replace(/√\(/g, 'Math.sqrt(');
+            s = s.replace(/∛\(/g, 'Math.cbrt(');
 
-            // Logarithms
-            s = s.replace(/log\(/g, 'Math.log10(');
-            s = s.replace(/ln\(/g, 'Math.log(');
-            // Custom base log(base, value) -> Math.log(val)/Math.log(base)
-            s = s.replace(/log_b\(([^,]+),([^)]+)\)/g, '(Math.log($2)/Math.log($1))');
+            // Restore protected scientific-notation literals
+            s = s.replace(/@/g, 'e');
 
-            // Replace display symbols
-            s = s.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-');
-
-            // Implicit multiplication: 2(3), (2)(3), 4π, 3sin(x)
-            s = s.replace(/(\d+)(\()/g, '$1*$2');
-            s = s.replace(/(\))(\d+)/g, '$1*$2');
-            s = s.replace(/(\))(\()/g, '$1*$2');
-            s = s.replace(/(\d+)(Math\.)/g, '$1*$2');
+            // Regroup unary +/- immediately before ** (JS syntax limitation)
+            s = this.fixUnaryMinusPow(s);
 
             // Execute safely
             const fn = new Function(`return (${s});`).bind(this);
             return fn();
+        }
+
+        // Rewrites "-a**b" → "-(a**b)" for unary signs in operand position
+        // ("Unary operator used immediately before exponentiation expression"
+        // is a SyntaxError in JavaScript).
+        fixUnaryMinusPow(s) {
+            let out = '';
+            let i = 0;
+            const isFactorStart = (ch) => /[0-9A-Za-z_$(]/.test(ch || '');
+            const parseFactor = (str, k) => {
+                let n = k;
+                while (n < str.length && str[n] === ' ') n++;
+                if (str[n] === '(') {
+                    let d = 0;
+                    for (let j = n; j < str.length; j++) {
+                        if (str[j] === '(') d++;
+                        else if (str[j] === ')') { d--; if (d === 0) return { txt: str.slice(n, j + 1), end: j + 1 }; }
+                    }
+                    return null;
+                }
+                let e = n;
+                while (e < str.length && /[0-9A-Za-z_$.]/.test(str[e])) e++;
+                return e > n ? { txt: str.slice(n, e), end: e } : null;
+            };
+
+            while (i < s.length) {
+                const ch = s[i];
+                if (ch === '-' || ch === '+') {
+                    let j = out.length - 1;
+                    while (j >= 0 && out[j] === ' ') j--;
+                    const prev = j >= 0 ? out[j] : '';
+                    const prev2 = j >= 1 ? out[j - 1] : '';
+                    const looksUnary = (prev === '' || /[(,:+\-*/%^=]/.test(prev));
+                    const isExponentSign = (prev === '*' && prev2 === '*');
+                    if (looksUnary && !isExponentSign) {
+                        const f = parseFactor(s, i + 1);
+                        if (f) {
+                            let k = f.end;
+                            while (k < s.length && s[k] === ' ') k++;
+                            if (s.slice(k, k + 2) === '**') {
+                                let chain = f.txt;
+                                let n = k + 2;
+                                while (true) {
+                                    while (n < s.length && s[n] === ' ') n++;
+                                    let sign = '';
+                                    if (s[n] === '-' || s[n] === '+') { sign = s[n]; n++; }
+                                    const f2 = parseFactor(s, n);
+                                    if (!f2) break;
+                                    chain += '**' + sign + f2.txt;
+                                    n = f2.end;
+                                    let p = n;
+                                    while (p < s.length && s[p] === ' ') p++;
+                                    if (s.slice(p, p + 2) === '**') { n = p + 2; continue; }
+                                    break;
+                                }
+                                out += ch + '(' + chain + ')';
+                                i = n;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                out += ch;
+                i++;
+            }
+            return out;
         }
 
         evaluate() {
@@ -307,11 +494,18 @@
             let closeP = (this.expr.match(/\)/g) || []).length;
             if (openP > closeP) {
                 this.expr += ')'.repeat(openP - closeP);
+                this.cursor = this.expr.length;
+                this.render();
             }
 
             try {
                 const res = this.solveParsed(this.expr);
-                if (typeof res === 'number' && !isNaN(res)) {
+                if (typeof res === 'string') {
+                    // e.g. Mixed() returns a formatted display string
+                    this.history.push(this.expr);
+                    this.histIdx = this.history.length;
+                    this.setResult(res, null);
+                } else if (typeof res === 'number' && !isNaN(res) && isFinite(res)) {
                     this.lastAnswer = res;
                     this.history.push(this.expr);
                     this.histIdx = this.history.length;
@@ -341,17 +535,28 @@
                 return;
             }
 
+            // Resolve a variable register letter from a key press.
+            // Variable letters mostly arrive via ALPHA + key, but also accept
+            // raw letter tokens.
+            const alphaVarMap = {
+                'INV': 'A', 'LOGAB': 'B', 'FRAC': 'C', 'SQRT': 'D',
+                'SQR': 'E', 'POW': 'F', 'LOG': 'X', 'LN': 'Y', 'M_PLUS': 'M'
+            };
+            let varKey = null;
+            if (/^[A-FXYM]$/.test(key)) varKey = key;
+            else if (this.isAlpha && alphaVarMap[key]) varKey = alphaVarMap[key];
+
             // STO (Store to variable)
-            if (this.isSto && /^[A-FXYM]$/.test(key)) {
-                this.vars[key] = this.currentResult !== null ? this.currentResult : this.lastAnswer;
-                this.setResult(`${key} = ${this.vars[key]}`, this.vars[key]);
+            if (this.isSto && varKey) {
+                this.vars[varKey] = this.currentResult !== null ? this.currentResult : this.lastAnswer;
+                this.setResult(`${varKey} = ${this.vars[varKey]}`, this.vars[varKey]);
                 this.resetModifiers();
                 return;
             }
 
             // RCL (Recall variable value into expression)
-            if (this.isRcl && /^[A-FXYM]$/.test(key)) {
-                this.insert(this.vars[key].toString());
+            if (this.isRcl && varKey) {
+                this.insert(this.vars[varKey].toString());
                 this.resetModifiers();
                 return;
             }
@@ -421,7 +626,7 @@
 
             // S<=>D Display Mode Switcher (Fraction <-> Decimal <-> DMS)
             if (key === 'SD') {
-                if (this.currentResult !== null) {
+                if (typeof this.currentResult === 'number' && isFinite(this.currentResult)) {
                     if (this.sdState === 0) {
                         const frac = this.toFraction(this.currentResult);
                         if (frac && frac.d > 1) {
@@ -445,7 +650,7 @@
 
             // DMS conversion directly
             if (key === 'DMS') {
-                if (this.currentResult !== null) {
+                if (typeof this.currentResult === 'number' && isFinite(this.currentResult)) {
                     this.resElem.textContent = this.toDMS(this.currentResult);
                     this.sdState = 2;
                 }
@@ -455,7 +660,7 @@
 
             // ENG (Engineering exponent shift)
             if (key === 'ENG') {
-                if (this.currentResult !== null) {
+                if (typeof this.currentResult === 'number' && isFinite(this.currentResult)) {
                     const e = this.isShift ? 3 : -3;
                     this.currentResult = this.currentResult * Math.pow(10, e);
                     this.resElem.textContent = this.formatNumber(this.currentResult);
@@ -473,6 +678,9 @@
                     this.isRcl = true;
                     this.isSto = false;
                 }
+                this.isShift = false;
+                this.isAlpha = false;
+                this.isHyp = false;
                 this.render();
                 return;
             }
@@ -493,18 +701,26 @@
             if (key === 'CALC') {
                 if (this.isShift) {
                     // SOLVE: Secant root finder for equation = 0 with variable X
-                    let x0 = this.vars.X || 0.1;
-                    let x1 = x0 + 0.01;
-                    for (let i = 0; i < 30; i++) {
-                        let y0 = this.evalSubFunc(this.expr, x0);
-                        let y1 = this.evalSubFunc(this.expr, x1);
-                        if (Math.abs(y1) < 1e-8) break;
-                        let dx = (y1 * (x1 - x0)) / (y1 - y0);
-                        x0 = x1;
-                        x1 -= dx;
+                    try {
+                        if (!this.expr.trim()) throw new Error('empty');
+                        let x0 = (typeof this.vars.X === 'number' && isFinite(this.vars.X) && this.vars.X !== 0) ? this.vars.X : 0.1;
+                        let x1 = x0 + 0.01;
+                        for (let i = 0; i < 30; i++) {
+                            let y0 = this.evalSubFunc(this.expr, x0);
+                            let y1 = this.evalSubFunc(this.expr, x1);
+                            if (typeof y1 !== 'number' || !isFinite(y1)) break;
+                            if (Math.abs(y1) < 1e-8) break;
+                            if (typeof y0 !== 'number' || !isFinite(y0) || y1 === y0) break;
+                            let dx = (y1 * (x1 - x0)) / (y1 - y0);
+                            x0 = x1;
+                            x1 -= dx;
+                        }
+                        if (typeof x1 !== 'number' || isNaN(x1) || !isFinite(x1)) throw new Error('no root');
+                        this.vars.X = x1;
+                        this.setResult(`X = ${this.formatNumber(x1)}`, x1);
+                    } catch (e) {
+                        this.setResult('Math ERROR', null);
                     }
-                    this.vars.X = x1;
-                    this.setResult(`X = ${this.formatNumber(x1)}`, x1);
                 } else {
                     // CALC: Evaluate current expression with preset variables
                     this.evaluate();
@@ -532,7 +748,7 @@
                     'POW': '^(', 'LOG': '10^(', 'LN': 'e^(',
                     'SIN': 'sin⁻¹(', 'COS': 'cos⁻¹(', 'TAN': 'tan⁻¹(',
                     'MUL': ' P ', 'DIV': ' C ', 'ADD': 'Pol(', 'SUB': 'Rec(',
-                    'EXP': 'π', 'DOT': Math.random().toFixed(3), 'ANS': '%'
+                    'EXP': 'π', 'DOT': 'Ran#', 'ANS': '%'
                 };
                 if (shiftKeys[key]) tok = shiftKeys[key];
             }
