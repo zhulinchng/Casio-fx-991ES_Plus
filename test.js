@@ -29,7 +29,7 @@ eval(code + '\nglobalThis.CasioSuperEngine = CasioSuperEngine;');
 function freshEngine() {
     const eng = Object.create(CasioSuperEngine.prototype);
     eng.expr = ''; eng.cursor = 0; eng.lastAnswer = 0; eng.currentResult = null;
-    eng.sdState = 0; eng.isShift = false; eng.isAlpha = false; eng.isHyp = false;
+    eng.sdState = 0; eng.engExp = null; eng.isShift = false; eng.isAlpha = false; eng.isHyp = false;
     eng.isSto = false; eng.isRcl = false; eng.angleMode = 'DEG'; eng.inMenu = false;
     eng.vars = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0, X: 0, Y: 0, M: 0 };
     eng.history = []; eng.histIdx = -1;
@@ -257,10 +257,16 @@ if (eng.resElem.textContent.includes('°')) pass++; else { fail++; console.error
 eng.handleKey('SD');
 eq('SD back to decimal', eng.resElem.textContent, '0.875');
 
-// ENG
-eng.currentResult = 123456;
+// ENG cycles the displayed engineering exponent without changing the value
+eng.currentResult = 123456; eng.engExp = null; eng.resElem.textContent = '123456';
 eng.handleKey('ENG');
-eq('ENG shift', Math.abs(eng.currentResult - 123.456) < 1e-9, true);
+eq('ENG display', eng.resElem.textContent, '123.456×10^3');
+eq('ENG keeps value', eng.currentResult, 123456);
+eng.handleKey('ENG');
+eq('ENG display 2nd', eng.resElem.textContent, '123456×10^0');
+eng.isShift = true; eng.handleKey('ENG'); eng.isShift = false;
+eq('ENG shift back', eng.resElem.textContent, '123.456×10^3');
+eng.engExp = null;
 
 // ---- Constructor boot + end-to-end EXE smoke test -----------------------------
 {

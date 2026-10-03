@@ -27,6 +27,7 @@
             this.lastAnswer = 0;
             this.currentResult = null;
             this.sdState = 0; // 0: decimal/default, 1: fraction, 2: DMS
+            this.engExp = null; // engineering-notation exponent offset
             
             this.isShift = false;
             this.isAlpha = false;
@@ -109,6 +110,7 @@
                 this.currentResult = isNaN(p) ? null : p;
             }
             this.sdState = 0;
+            this.engExp = null;
         }
 
         // --- Text Editing & Cursor Operations ---
@@ -759,12 +761,18 @@
                 return;
             }
 
-            // ENG (Engineering exponent shift)
+            // ENG (Engineering exponent shift) — display-only: the stored
+            // value must NOT change, only its mantissa/exponent presentation.
             if (key === 'ENG') {
-                if (typeof this.currentResult === 'number' && isFinite(this.currentResult)) {
-                    const e = this.isShift ? 3 : -3;
-                    this.currentResult = this.currentResult * Math.pow(10, e);
-                    this.resElem.textContent = this.formatNumber(this.currentResult);
+                if (typeof this.currentResult === 'number' && isFinite(this.currentResult) && this.currentResult !== 0) {
+                    if (this.engExp === null || this.engExp === undefined) {
+                        this.engExp = Math.floor(Math.log10(Math.abs(this.currentResult)) / 3) * 3;
+                        if (this.isShift) this.engExp += 3;
+                    } else {
+                        this.engExp += this.isShift ? 3 : -3;
+                    }
+                    const mantissa = this.currentResult / Math.pow(10, this.engExp);
+                    this.resElem.textContent = `${parseFloat(mantissa.toPrecision(10))}×10^${this.engExp}`;
                 }
                 this.resetModifiers();
                 return;
