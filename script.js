@@ -187,12 +187,23 @@
         }
 
         nPr(n, r) {
-            if (n < r || n < 0 || r < 0) return NaN;
+            if (n < r || n < 0 || r < 0 || !Number.isInteger(n) || !Number.isInteger(r)) return NaN;
+            if (n > 170) { // avoid factorial overflow
+                let p = 1;
+                for (let i = 0; i < r; i++) p *= (n - i);
+                return p;
+            }
             return this.factorial(n) / this.factorial(n - r);
         }
 
         nCr(n, r) {
-            if (n < r || n < 0 || r < 0) return NaN;
+            if (n < r || n < 0 || r < 0 || !Number.isInteger(n) || !Number.isInteger(r)) return NaN;
+            if (n > 170) { // avoid factorial overflow
+                r = Math.min(r, n - r);
+                let c = 1;
+                for (let i = 0; i < r; i++) c = c * (n - i) / (i + 1);
+                return c;
+            }
             return this.factorial(n) / (this.factorial(r) * this.factorial(n - r));
         }
 
@@ -230,6 +241,7 @@
         // Central Math Parser
         solveParsed(inputStr) {
             let s = String(inputStr);
+            this._mixedRaw = null;
 
             // --- Parser helpers -------------------------------------------------
             const matchParen = (str, i) => {
@@ -297,6 +309,7 @@
 
             // Mixed fraction → formatted display string (top level only)
             let mixedResult = null;
+            let mixedRaw = null;
             {
                 let i = s.indexOf('Mixed(');
                 while (i !== -1) {
@@ -306,6 +319,7 @@
                     if (close === -1) break;
                     const v = evalArg(s.slice(open + 1, close));
                     const frac = this.toFraction(v);
+                    mixedRaw = v;
                     let txt;
                     if (frac && frac.d > 1) {
                         const whole = Math.trunc(v);
@@ -321,7 +335,7 @@
                 }
                 if (mixedResult !== null) {
                     const rest = s.replace(/@MIXED@/g, '').replace(/[\s()+\-×÷*/]/g, '');
-                    if (rest === '') return mixedResult;
+                    if (rest === '') { this._mixedRaw = mixedRaw; return mixedResult; }
                     s = s.replace(/@MIXED@/g, 'NaN');
                 }
             }
@@ -356,8 +370,9 @@
             // corrupt them.
             s = s.replace(/(\d(?:\.\d+)?)e([+-]?\d+)/g, '$1@$2');
 
-            // Factorial (n!)
-            s = s.replace(/(\d+)!/g, (_, n) => `(${this.factorial(+n)})`);
+            // Factorial (n!) — precomputed values may be exponential literals,
+            // so protect them the same way as substituted variables.
+            s = s.replace(/(\d+)!/g, (_, n) => `(${String(this.factorial(+n)).replace(/e([+-]?\d+)/, '@$1')})`);
             // Postfix factorial over a compound operand: (2+3)! , (5)! , sin(30)! …
             {
                 let i = s.indexOf('!');
@@ -604,7 +619,7 @@
                     // e.g. Mixed() returns a formatted display string
                     this.history.push(this.expr);
                     this.histIdx = this.history.length;
-                    this.setResult(res, null);
+                    this.setResult(res, this._mixedRaw ?? null);
                 } else if (typeof res === 'number' && !isNaN(res) && isFinite(res)) {
                     this.lastAnswer = res;
                     this.history.push(this.expr);
@@ -729,6 +744,7 @@
 
             // S<=>D Display Mode Switcher (Fraction <-> Decimal <-> DMS)
             if (key === 'SD') {
+                this.engExp = null;
                 if (typeof this.currentResult === 'number' && isFinite(this.currentResult)) {
                     if (this.sdState === 0) {
                         const frac = this.toFraction(this.currentResult);
@@ -753,6 +769,7 @@
 
             // DMS conversion directly
             if (key === 'DMS') {
+                this.engExp = null;
                 if (typeof this.currentResult === 'number' && isFinite(this.currentResult)) {
                     this.resElem.textContent = this.toDMS(this.currentResult);
                     this.sdState = 2;

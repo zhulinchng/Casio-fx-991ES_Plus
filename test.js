@@ -138,6 +138,11 @@ eng.vars.X = 4;
 eq('var factorial', eng.solveParsed('X!'), 24);
 eng.vars.X = 0;
 eq('neg factorial NaN', isNaN(eng.solveParsed('(-5)!')), true);
+eq('big factorial', eng.solveParsed('170!'), 7.257415615307994e+306, 1e300);
+eq('100 factorial', eng.solveParsed('100!'), 9.33262154439441e+157, 1e150);
+eq('big nCr', eng.solveParsed('200 C 100'), 9.054851465610328e+58, 1e52);
+eq('big nPr', eng.solveParsed('200 P 3'), 200 * 199 * 198);
+eq('Mixed keeps raw value', (() => { eng.expr = 'Mixed(0.875)'; eng.cursor = eng.expr.length; eng.evaluate(); return eng.currentResult === 0.875; })(), true);
 
 // ---- Power chains with unary signs ------------------------------------------
 eq('exp chain with sign', eng.solveParsed('2^-3^2'), Math.pow(2, -9), 1e-12);
