@@ -12,6 +12,8 @@ An authentic, zero-dependency, pixel-accurate web recreation of the world's most
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-NONE-success?style=for-the-badge)](#)
 
+### 🔗 [Live Demo — zhulinchng.github.io](https://zhulinchng.github.io/)
+
 <br/>
 <pre align="center">
  _________________________________________
@@ -74,7 +76,7 @@ No installation, web servers, or package managers required.
 
 1. Clone or download this repository:
    ```bash
-   git clone https://github.com/altkriz/casio-fx-991es-plus.git
+   git clone https://github.com/zhulinchng/Casio-fx-991ES_Plus.git
    ```
 
 2.  Open the file in any modern web browser:
